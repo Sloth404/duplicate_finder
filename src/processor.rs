@@ -1,13 +1,15 @@
+mod file_scanner; // Ensure file_scanner is included
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::path::PathBuf;  // <-- Add this line
 use image::{DynamicImage, imageops};
 use image::ImageReader;
 use tokio::fs;
 use tokio::task;
-use tokio_stream::StreamExt;
+use tokio_stream::StreamExt;  // <-- You need this import to use StreamExt
 use std::time::Instant;
 use futures::future::join_all;
-use crate::file_scanner::scan_directory;
 
 #[derive(Debug, Clone)]
 pub struct Progress {
@@ -26,7 +28,8 @@ pub async fn find_duplicates(directory: &str, progress: Arc<Mutex<Progress>>, ou
     let start_time = Instant::now();
     println!("Starting to find duplicates in directory: {}", directory);
 
-    let image_paths = collect_image_paths(&directory.to_string()).await;
+    // Collect image paths using file_scanner's scan_directory function
+    let image_paths = collect_image_paths(directory).await;
     let total = image_paths.len();
     println!("Found {} image(s) to process.", total);
 
@@ -62,9 +65,19 @@ async fn collect_image_paths(dir: &str) -> Vec<String> {
     let start_time = Instant::now();
     let mut paths = Vec::new(); // To store the image paths
 
-    // Use the scan_directory from scanner.rs
-    let sub_paths = scanner::scan_directory(Arc::new(dir.to_owned())).await;
-    paths.extend(sub_paths); // Add subdirectory results to paths
+    // Use the scan_directory function from file_scanner, pin the stream using Box
+    let mut sub_paths = Box::pin(file_scanner::visit(PathBuf::from(dir)));  // Box and pin the stream
+
+    while let Some(entry) = sub_paths.next().await {
+        match entry {
+            Ok(dir_entry) => {
+                paths.push(dir_entry.path().to_string_lossy().to_string());  // Convert PathBuf to String
+            },
+            Err(e) => {
+                eprintln!("Error reading directory entry: {}", e);
+            },
+        }
+    }
 
     let duration = start_time.elapsed();
     println!("Directory scanning took: {:?}", duration);
