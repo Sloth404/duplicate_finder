@@ -1,28 +1,16 @@
-mod file_scanner; // Ensure file_scanner is included
+mod file_scanner;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::path::PathBuf;  // <-- Add this line
+use std::path::PathBuf;
 use image::{DynamicImage, imageops};
 use image::ImageReader;
 use tokio::fs;
 use tokio::task;
-use tokio_stream::StreamExt;  // <-- You need this import to use StreamExt
+use tokio_stream::StreamExt;
 use std::time::Instant;
 use futures::future::join_all;
-
-#[derive(Debug, Clone)]
-pub struct Progress {
-    pub progress: f32,
-}
-
-impl Default for Progress {
-    fn default() -> Self {
-        Progress {
-            progress: 0.0, // Set the default value for progress
-        }
-    }
-}
+use crate::Progress;
 
 pub async fn find_duplicates(directory: &str, progress: Arc<Mutex<Progress>>, output_file: &str) -> Vec<String> {
     let start_time = Instant::now();
@@ -60,12 +48,10 @@ pub async fn find_duplicates(directory: &str, progress: Arc<Mutex<Progress>>, ou
     duplicates
 }
 
-// Optimized directory scanning (parallelized)
 async fn collect_image_paths(dir: &str) -> Vec<String> {
     let start_time = Instant::now();
-    let mut paths = Vec::new(); // To store the image paths
+    let mut paths = Vec::new();
 
-    // Use the scan_directory function from file_scanner, pin the stream using Box
     let mut sub_paths = Box::pin(file_scanner::visit(PathBuf::from(dir)));  // Box and pin the stream
 
     while let Some(entry) = sub_paths.next().await {
@@ -85,7 +71,6 @@ async fn collect_image_paths(dir: &str) -> Vec<String> {
     paths
 }
 
-// Using difference hash (dHash) for faster hashing
 async fn compute_image_hash(path: &str) -> Result<String, String> {
     let start_time = Instant::now();
     println!("Computing hash for image: {}", path);
@@ -114,13 +99,11 @@ async fn compute_image_hash(path: &str) -> Result<String, String> {
     }
 }
 
-// dHash Algorithm (faster and efficient)
 fn compute_dhash(img: &DynamicImage) -> String {
     let start_time = Instant::now();
     let gray_img = img.to_luma8();
     let (width, height) = gray_img.dimensions();
 
-    // Generate dHash (difference hash)
     let mut hash = String::new();
     for y in 0..height {
         for x in 0..(width - 1) {
@@ -136,7 +119,6 @@ fn compute_dhash(img: &DynamicImage) -> String {
     hash
 }
 
-// Caching images asynchronously to avoid redundant reads
 async fn process_images_concurrently(
     image_paths: &[String],
     progress: &Arc<Mutex<Progress>>,
@@ -145,30 +127,25 @@ async fn process_images_concurrently(
     let hash_map = Arc::new(Mutex::new(HashMap::new()));
     let mut tasks = Vec::new();
 
-    // Caching and processing images concurrently
     for path in image_paths {
         let hash_map = Arc::clone(&hash_map);
-        let progress = Arc::clone(&progress);
+        let progress: Arc<Mutex<Progress>> = Arc::clone(&progress);
         let path = path.clone();
 
-        let task = tokio::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             if let Ok(hash) = compute_image_hash(&path).await {
                 let mut map = hash_map.lock().unwrap();
                 map.entry(hash).or_insert_with(Vec::new).push(path);
             }
 
-            // Update progress
             let mut prog = progress.lock().unwrap();
-            prog.progress += pb_increment;
-        });
-
-        tasks.push(task);
+            prog.progress = (prog.progress + pb_increment).min(1.0);
+        }))
     }
 
     // Wait for all tasks to complete
-    let _ = join_all(tasks).await;
+    join_all(tasks).await;
 
-    // Return the hash map containing all the results
     Arc::try_unwrap(hash_map)
         .unwrap_or_else(|_| panic!("Failed to unwrap hash_map Arc"))
         .into_inner()
